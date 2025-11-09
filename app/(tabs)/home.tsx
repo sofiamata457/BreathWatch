@@ -1,5 +1,5 @@
 import { CoughChart } from '@/components/CoughChart';
-import { Paper, Typography, Box } from '@mui/material';
+import { Paper, Typography, Box, CircularProgress } from '@mui/material';
 import React, { useMemo, useEffect } from 'react';
 import { useRecording } from '@/contexts/RecordingContext';
 import { useRouter } from 'expo-router';
@@ -13,90 +13,92 @@ import InfoIcon from '@mui/icons-material/Info';
 export default function HomePage() {
   const themeColors = Colors.dark;
   const router = useRouter();
-  const { chunkResponses, finalSummary, fetchFinalSummary, isFetchingSummary } = useRecording();
+  const { chunkResponses, finalSummary, fetchFinalSummary, isFetchingSummary, summaryProgress } = useRecording();
 
-  // Default sample data (original styling) - all zeros initially
+  // Default sample data - all zeros initially
   const defaultData = {
-    counts: [0, 0, 0, 0, 0, 0, 0],
-    labels: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+    counts: [0],
+    labels: ['No Data'],
     breakdown: [
-      { wet: 0, dry: 0 },
-      { wet: 0, dry: 0 },
-      { wet: 0, dry: 0 },
-      { wet: 0, dry: 0 },
-      { wet: 0, dry: 0 },
-      { wet: 0, dry: 0 },
-      { wet: 0, dry: 0 },
+      { wet: 0, choking: 0, congestion: 0, stridor: 0, wheezing: 0 },
     ],
   };
 
-  // Calculate data from chunk responses or final summary
-  // Always show weekly view (Mon-Sun) with aggregated data
+  // Calculate data from ACTUAL recording data - NO FAKE DISTRIBUTIONS
   const chartData = useMemo(() => {
-    const weeklyLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    const weeklyCounts = [0, 0, 0, 0, 0, 0, 0];
-    const weeklyBreakdown = [
-      { wet: 0, dry: 0 },
-      { wet: 0, dry: 0 },
-      { wet: 0, dry: 0 },
-      { wet: 0, dry: 0 },
-      { wet: 0, dry: 0 },
-      { wet: 0, dry: 0 },
-      { wet: 0, dry: 0 },
-    ];
-
-    // If we have a final summary, distribute data across the week
+    // If we have a final summary, use ACTUAL data
     if (finalSummary) {
       const hourlyData = finalSummary.hourly_breakdown || [];
-      const totalCoughs = hourlyData.reduce((sum, hour) => sum + hour.cough_count, 0);
+      const allEvents = finalSummary.cough_events || [];
       
-      // Distribute total coughs evenly across 7 days for visualization
-      const coughsPerDay = Math.floor(totalCoughs / 7);
-      const remainder = totalCoughs % 7;
-      
-      for (let i = 0; i < 7; i++) {
-        weeklyCounts[i] = coughsPerDay + (i < remainder ? 1 : 0);
+      // Use hourly breakdown if available, otherwise show single total
+      if (hourlyData.length > 0) {
+        const labels = hourlyData.map((hour, idx) => `Hour ${idx + 1}`);
+        const counts = hourlyData.map(hour => hour.cough_count); // KEEP AS COUNTS
         
-        // Calculate wet/dry breakdown based on attribute prevalence
-        const wetEstimate = Math.round(
-          (weeklyCounts[i] * finalSummary.attribute_prevalence.wet) / 100
-        );
-        weeklyBreakdown[i] = {
-          wet: wetEstimate,
-          dry: weeklyCounts[i] - wetEstimate,
-        };
+        // Use PERCENTAGES from attribute_prevalence (from model output)
+        const attr = finalSummary.attribute_prevalence || {};
+        console.log('Attribute prevalence (hourly):', attr);
+        const breakdown = [{
+          wet: attr.wet || 0,                                    // PERCENTAGE
+          choking: attr.choking || 0,                            // PERCENTAGE
+          congestion: attr.congestion || 0,                      // PERCENTAGE
+          stridor: attr.stridor || 0,                            // PERCENTAGE
+          wheezing: attr.selfreported_wheezing || 0,             // PERCENTAGE
+        }];
+        console.log('Breakdown (hourly):', breakdown);
+        
+        return { counts, labels, breakdown };
+      } else {
+        // No hourly data - show single total
+        const totalCoughs = allEvents.length;
+        const labels = ['Recording'];
+        const counts = [totalCoughs]; // KEEP AS COUNTS
+        
+        // Use PERCENTAGES from attribute_prevalence (from model output)
+        const attr = finalSummary.attribute_prevalence || {};
+        console.log('Attribute prevalence (single):', attr);
+        const breakdown = [{
+          wet: attr.wet || 0,                                    // PERCENTAGE
+          choking: attr.choking || 0,                            // PERCENTAGE
+          congestion: attr.congestion || 0,                      // PERCENTAGE
+          stridor: attr.stridor || 0,                            // PERCENTAGE
+          wheezing: attr.selfreported_wheezing || 0,             // PERCENTAGE
+        }];
+        console.log('Breakdown (single):', breakdown);
+        
+        return { counts, labels, breakdown };
       }
-      
-      return { counts: weeklyCounts, labels: weeklyLabels, breakdown: weeklyBreakdown };
     }
 
-    // If we have chunk responses, aggregate them
+    // If we have chunk responses, use ACTUAL data from chunks
     if (chunkResponses.length > 0) {
-      const totalCoughs = chunkResponses.reduce((sum, chunk) => sum + chunk.cough_count, 0);
+      const labels = chunkResponses.map((chunk, idx) => `Chunk ${chunk.chunk_index + 1}`);
+      const counts = chunkResponses.map(chunk => chunk.cough_count);
       
-      // Distribute total coughs across the week
-      const coughsPerDay = Math.floor(totalCoughs / 7);
-      const remainder = totalCoughs % 7;
+      // Get ALL events from all chunks
+      const allEvents = chunkResponses.flatMap(chunk => chunk.detected_events || []);
       
-      for (let i = 0; i < 7; i++) {
-        weeklyCounts[i] = coughsPerDay + (i < remainder ? 1 : 0);
-        
-        // Estimate wet/dry (50/50 split as placeholder)
-        const totalEvents = chunkResponses.reduce(
-          (sum, chunk) => sum + (chunk.detected_events?.length || 0),
-          0
-        );
-        const eventsPerDay = Math.floor(totalEvents / 7);
-        weeklyBreakdown[i] = {
-          wet: Math.floor(eventsPerDay * 0.5),
-          dry: Math.ceil(eventsPerDay * 0.5),
-        };
-      }
+      // Calculate ACTUAL attribute counts from events
+      const wetCount = allEvents.filter(e => e.tags?.includes('WET')).length;
+      const chokingCount = allEvents.filter(e => e.tags?.includes('CHOKING')).length;
+      const congestionCount = allEvents.filter(e => e.tags?.includes('CONGESTION')).length;
+      const stridorCount = allEvents.filter(e => e.tags?.includes('STRIDOR')).length;
+      const wheezingCount = allEvents.filter(e => e.tags?.includes('SELFREPORTED_WHEEZING')).length;
       
-      return { counts: weeklyCounts, labels: weeklyLabels, breakdown: weeklyBreakdown };
+      // Single breakdown showing total attribute counts across all chunks
+      const breakdown = [{
+        wet: wetCount,
+        choking: chokingCount,
+        congestion: congestionCount,
+        stridor: stridorCount,
+        wheezing: wheezingCount,
+      }];
+      
+      return { counts, labels, breakdown };
     }
 
-    // Default: show weekly data with zeros
+    // Default: show zeros
     return defaultData;
   }, [chunkResponses, finalSummary]);
 
@@ -163,22 +165,27 @@ export default function HomePage() {
       {/* Chart Section - Now at top */}
       <Box sx={{ flex: 1, overflowY: 'auto', pb: '80px' }}>
         <Paper sx={{ minHeight: '100%', background: 'transparent' }}>
-        {isFetchingSummary && (
-          <Box
-            sx={{
-              p: 3,
-              textAlign: 'center',
-              background: `linear-gradient(135deg, rgba(0, 212, 255, 0.1) 0%, rgba(123, 44, 191, 0.1) 100%)`,
-              borderRadius: '12px',
-              mx: 2,
-              mb: 2,
-            }}
-          >
-            <Typography variant="body1" sx={{ color: themeColors.text, opacity: 0.8 }}>
-              Generating final summary...
-            </Typography>
-          </Box>
-        )}
+         {isFetchingSummary && (
+           <Box
+             sx={{
+               p: 3,
+               textAlign: 'center',
+               background: `linear-gradient(135deg, rgba(0, 212, 255, 0.1) 0%, rgba(123, 44, 191, 0.1) 100%)`,
+               borderRadius: '12px',
+               mx: 2,
+               mb: 2,
+               border: `1px solid rgba(0, 212, 255, 0.3)`,
+             }}
+           >
+             <CircularProgress size={24} sx={{ mb: 2, color: themeColors.bright }} />
+             <Typography variant="body1" sx={{ color: themeColors.text, fontWeight: 600, mb: 1 }}>
+               {summaryProgress || 'Generating final summary...'}
+             </Typography>
+             <Typography variant="caption" sx={{ color: themeColors.text, opacity: 0.7 }}>
+               This may take up to 60 seconds depending on data size
+             </Typography>
+           </Box>
+         )}
       {chunkResponses.length > 0 && !finalSummary && !isFetchingSummary && (
         <Box
           sx={{

@@ -8,7 +8,7 @@ import React from 'react';
 interface CoughChartProps {
   counts: number[];
   labels: string[];
-  breakdown?: { wet: number; dry: number }[]; // optional distribution per day
+  breakdown?: { wet: number; choking: number; congestion: number; stridor: number; wheezing: number }[]; // optional attribute distribution per day
 }
 
 export const CoughChart: React.FC<CoughChartProps> = ({ counts, labels, breakdown }) => {
@@ -21,7 +21,9 @@ export const CoughChart: React.FC<CoughChartProps> = ({ counts, labels, breakdow
     _event: React.MouseEvent<SVGElement, MouseEvent>,
     barItemIdentifier: BarItemIdentifier,
   ) => {
-    console.log(1);
+    console.log('Bar clicked, index:', barItemIdentifier.dataIndex);
+    console.log('Breakdown available:', breakdown);
+    console.log('Breakdown at index:', breakdown?.[barItemIdentifier.dataIndex]);
     setSelectedIndex(barItemIdentifier.dataIndex);
   };
 
@@ -149,11 +151,15 @@ export const CoughChart: React.FC<CoughChartProps> = ({ counts, labels, breakdow
         <Box>
           {selectedIndex === null ? (
             <Typography variant="body1" align="center" sx={{ py: 10, color: themeColors.text, opacity: 0.6 }}>
-              Click a bar above to see wet/dry breakdown
+              Click a bar above to see attribute breakdown
             </Typography>
-          ) : breakdown && breakdown[selectedIndex] ? (
+          ) : breakdown && breakdown.length > 0 && breakdown[selectedIndex] ? (
+            (() => {
+              console.log('Rendering breakdown chart, selectedIndex:', selectedIndex);
+              console.log('Breakdown data:', breakdown[selectedIndex]);
+              return (
             <BarChart
-              height={150}
+              height={200}
               layout="horizontal"
               xAxis={[
                 {
@@ -171,7 +177,7 @@ export const CoughChart: React.FC<CoughChartProps> = ({ counts, labels, breakdow
               ]}
               yAxis={[
                 {
-                  data: ['Wet', 'Dry'],
+                  data: ['Wet', 'Choking', 'Congestion', 'Stridor', 'Wheezing'],
                   scaleType: 'band',
                   tickLabelStyle: { fill: themeColors.text },
                   labelStyle: { fill: themeColors.text },
@@ -187,9 +193,15 @@ export const CoughChart: React.FC<CoughChartProps> = ({ counts, labels, breakdow
               ]}
               series={[
                 {
-                  data: [breakdown[selectedIndex].wet, breakdown[selectedIndex].dry],
-                  label: 'Cough Distribution',
-                  color: themeColors.text,
+                  data: [
+                    breakdown[selectedIndex].wet,
+                    breakdown[selectedIndex].choking,
+                    breakdown[selectedIndex].congestion,
+                    breakdown[selectedIndex].stridor,
+                    breakdown[selectedIndex].wheezing,
+                  ],
+                  label: 'Attribute Prevalence (%)',
+                  color: themeColors.bright,
                 },
               ]}
               spacing={0.3}
@@ -206,6 +218,8 @@ export const CoughChart: React.FC<CoughChartProps> = ({ counts, labels, breakdow
                 },
               }}
             />
+              );
+            })()
           ) : (
             <Typography variant="body1" align="center" sx={{ py: 10, color: themeColors.text }}>
               No data available

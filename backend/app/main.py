@@ -43,6 +43,24 @@ from app.preprocessing.feature_extraction_mobile import prepare_mobile_features,
 from app.preprocessing.event_detection import detect_cough_events_with_hysteresis, calculate_snr
 from app.models.cough_vad import CoughVAD
 from app.models.wheeze_detector import WheezeDetector
+import sys
+from pathlib import Path
+
+# Import CoughMultitaskCNN from training script
+try:
+    train_script_path = Path(__file__).parent.parent.parent / "train_cough_multitask.py"
+    if train_script_path.exists():
+        sys.path.insert(0, str(train_script_path.parent))
+        from train_cough_multitask import CoughMultitaskCNN
+        COUGH_MULTITASK_CNN_AVAILABLE = True
+    else:
+        COUGH_MULTITASK_CNN_AVAILABLE = False
+        CoughMultitaskCNN = None
+except Exception as e:
+    # Logger not available yet, use print
+    print(f"Warning: Could not import CoughMultitaskCNN: {e}")
+    COUGH_MULTITASK_CNN_AVAILABLE = False
+    CoughMultitaskCNN = None
 from app.services.dedalus_client import DedalusClient
 from app.services.pattern_panel import calculate_pattern_scores
 from app.utils import setup_logging, ensure_directory, get_data_path
@@ -99,7 +117,16 @@ def get_cough_vad() -> CoughVAD:
     """Get or initialize cough VAD."""
     global cough_vad
     if cough_vad is None:
-        cough_vad = CoughVAD()
+        # Use CoughMultitaskCNN if available, otherwise use default
+        if COUGH_MULTITASK_CNN_AVAILABLE:
+            logger.info("✅ Using CoughMultitaskCNN model class (from train_cough_multitask.py)")
+            # Create a factory function that returns the model instance
+            def model_factory():
+                return CoughMultitaskCNN(num_attrs=5)
+            cough_vad = CoughVAD(model_class=model_factory)
+        else:
+            logger.warning("⚠️ CoughMultitaskCNN not available, using default SimpleCoughModel")
+            cough_vad = CoughVAD()
     return cough_vad
 
 
@@ -129,6 +156,43 @@ async def health_check():
         "service": "Sleep Respiratory Monitoring API",
         "version": "2.0.0",
         "pipeline": "mobile-optimized (1s log-Mel windows, binary VAD)"
+    }
+
+
+@app.get("/session/{session_id}")
+async def get_session_status(session_id: str):
+    """
+    Get status of a specific session (for debugging).
+    
+    Returns:
+        Session information including chunk count and metadata
+    """
+    if session_id not in sessions:
+        return {
+            "session_id": session_id,
+            "exists": False,
+            "message": "Session not found. No chunks have been processed for this session yet."
+        }
+    
+    session = sessions[session_id]
+    return {
+        "session_id": session_id,
+        "exists": True,
+        "chunk_count": len(session["chunks"]),
+        "patient_id": session.get("patient_id"),
+        "age": session.get("age"),
+        "sex": session.get("sex"),
+        "start_time": session.get("start_time").isoformat() if session.get("start_time") else None,
+        "last_update": session.get("last_update").isoformat() if session.get("last_update") else None,
+        "chunks": [
+            {
+                "chunk_index": chunk.get("chunk_index"),
+                "cough_count": chunk.get("cough_count", 0),
+                "wheeze_windows": chunk.get("wheeze_windows", 0),
+                "windows_processed": chunk.get("windows_processed", 0),
+            }
+            for chunk in session["chunks"]
+        ]
     }
 
 
@@ -168,12 +232,14 @@ async def get_status():
         "endpoints": {
             "health": "GET /",
             "status": "GET /status",
+            "session_status": "GET /session/{session_id}",
             "process_chunk": "POST /process-chunk",
             "final_summary": "POST /final-summary/{session_id}",
             "nightly_summary": "POST /nightly-summary",
             "analyze": "POST /analyze (dev/testing only)",
             "docs": "GET /docs"
-        }
+        },
+        "active_sessions": len(sessions)
     }
 
 
@@ -238,12 +304,13 @@ async def analyze_audio(
             audio, sample_rate = load_audio(temp_file_path, target_sr=16000)
             
             # Basic preprocessing (trim, denoise, normalize)
-            audio = trim_silence(audio, sample_rate)
+            # Use less aggressive trimming (top_db=30 instead of 40) to preserve quiet cough sounds
+            audio = trim_silence(audio, sample_rate, top_db=30)
             audio = denoise_audio(audio, sample_rate)
             audio = normalize_audio(audio)
             
             # Segment into 1-second windows (mobile format)
-            windows = segment_audio_1s_windows(audio, sr=sample_rate, window_length=1.0, overlap=0.0)
+            windows = segment_audio_1s_windows(audio, sr=sample_rate, window_length=1.0, stride=0.25)
             
             if not windows:
                 raise HTTPException(status_code=400, detail="No audio windows extracted")
@@ -395,11 +462,22 @@ async def process_chunk(
     Returns:
         Chunk processing results with detected events
     """
+    temp_file_path = None
+    
     try:
-        logger.info(f"Processing chunk {chunk_index} for session {session_id}")
+        logger.info(f"📥 Received chunk {chunk_index} for session {session_id}")
+        logger.info(f"   File: {audio_chunk.filename}, Content-Type: {audio_chunk.content_type}, Size: {audio_chunk.size if hasattr(audio_chunk, 'size') else 'unknown'}")
+        
+        # Validate session_id and chunk_index
+        if not session_id or not session_id.strip():
+            raise HTTPException(status_code=400, detail="session_id is required and cannot be empty")
+        
+        if chunk_index < 0:
+            raise HTTPException(status_code=400, detail=f"chunk_index must be >= 0, got {chunk_index}")
         
         # Initialize or get session
         if session_id not in sessions:
+            logger.info(f"Creating new session: {session_id}")
             sessions[session_id] = {
                 "session_id": session_id,
                 "patient_id": patient_id,
@@ -409,7 +487,9 @@ async def process_chunk(
                 "start_time": datetime.now(),
                 "last_update": datetime.now()
             }
+            logger.info(f"Session {session_id} created. Total sessions: {len(sessions)}")
         else:
+            logger.debug(f"Session {session_id} already exists with {len(sessions[session_id]['chunks'])} chunks")
             # Update metadata if provided
             if patient_id is not None:
                 sessions[session_id]["patient_id"] = patient_id
@@ -419,91 +499,233 @@ async def process_chunk(
                 sessions[session_id]["sex"] = sex
             sessions[session_id]["last_update"] = datetime.now()
         
+        # Validate and read uploaded file
+        try:
+            content = await audio_chunk.read()
+            if not content or len(content) == 0:
+                raise HTTPException(status_code=400, detail="Uploaded audio file is empty")
+            
+            logger.info(f"   Read {len(content)} bytes from uploaded file")
+        except Exception as e:
+            logger.error(f"Error reading uploaded file: {e}", exc_info=True)
+            raise HTTPException(status_code=400, detail=f"Failed to read uploaded file: {str(e)}")
+        
         # Save uploaded file temporarily
         temp_dir = get_data_path()
-        temp_file_path = None
         
         try:
-            # Create temporary file
+            # Create temporary file with appropriate suffix
             suffix = Path(audio_chunk.filename).suffix if audio_chunk.filename else ".wav"
+            # Ensure suffix is valid
+            if not suffix or suffix not in [".wav", ".webm", ".mp3", ".m4a", ".ogg"]:
+                suffix = ".wav"  # Default to WAV
+            
             with tempfile.NamedTemporaryFile(
                 delete=False,
                 dir=temp_dir,
                 suffix=suffix
             ) as temp_file:
                 temp_file_path = temp_file.name
-                content = await audio_chunk.read()
                 temp_file.write(content)
-            
-            # Load and preprocess audio
+                logger.info(f"   Saved temporary file: {temp_file_path}")
+        except Exception as e:
+            logger.error(f"Error creating temporary file: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to create temporary file: {str(e)}")
+        
+        # Load and preprocess audio
+        try:
+            logger.info("   Loading audio file...")
             audio, sample_rate = load_audio(temp_file_path, target_sr=16000)
-            audio = trim_silence(audio, sample_rate)
+            logger.info(f"   Loaded audio: {len(audio)/sample_rate:.2f}s, {sample_rate}Hz")
+        except Exception as e:
+            logger.error(f"Error loading audio: {e}", exc_info=True)
+            raise HTTPException(status_code=400, detail=f"Failed to load audio file: {str(e)}. Ensure the file is a valid audio format (WAV, WebM, etc.)")
+        
+        try:
+            logger.info("   Preprocessing audio (trim, denoise, normalize)...")
+            # Use less aggressive trimming (top_db=30 instead of 40) to preserve quiet cough sounds
+            audio = trim_silence(audio, sample_rate, top_db=30)
             audio = denoise_audio(audio, sample_rate)
             audio = normalize_audio(audio)
-            
-            # Segment into 1-second windows
-            windows = segment_audio_1s_windows(audio, sr=sample_rate, window_length=1.0, overlap=0.0)
-            
-            if not windows:
-                raise HTTPException(status_code=400, detail="No audio windows extracted from chunk")
-            
-            # Initialize models
+            logger.info(f"   Preprocessed audio: {len(audio)/sample_rate:.2f}s")
+        except Exception as e:
+            logger.error(f"Error preprocessing audio: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to preprocess audio: {str(e)}")
+        
+        # Segment into 1-second windows
+        try:
+            logger.info("   Segmenting audio into 1s windows...")
+            windows = segment_audio_1s_windows(audio, sr=sample_rate, window_length=1.0, stride=0.25)
+            logger.info(f"   Created {len(windows)} windows")
+        except Exception as e:
+            logger.error(f"Error segmenting audio: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to segment audio: {str(e)}")
+        
+        if not windows:
+            raise HTTPException(status_code=400, detail="No audio windows extracted from chunk. Audio may be too short or invalid.")
+        
+        # Initialize models
+        try:
+            logger.info("   Loading ML models...")
             cough_model = get_cough_vad()
             wheeze_model = get_wheeze_detector()
             
-            # Process each window
+            # Check if models are actually loaded (not using mocks)
+            if cough_model.model is None:
+                logger.error("   ⚠️⚠️⚠️ COUGH MODEL NOT LOADED - USING MOCK PREDICTIONS! ⚠️⚠️⚠️")
+                logger.error("   This means the model file is missing. Check model path in cough_vad.py")
+            else:
+                logger.info("   ✅ Cough model loaded successfully (using REAL model, not mocks)")
+            
+            if wheeze_model.model is None:
+                logger.warning("   ⚠️ Wheeze model not loaded - using mock predictions")
+            else:
+                logger.info("   ✅ Wheeze model loaded successfully")
+        except Exception as e:
+            logger.error(f"Error loading models: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to load ML models: {str(e)}")
+        
+        # Calculate absolute window index offset from previous chunks
+        # With stride=0.25s, we can't assume a fixed number of windows per chunk
+        # Sum up windows from all previous chunks in this session
+        total_previous_windows = 0
+        if session_id in sessions:
+            for prev_chunk in sessions[session_id]["chunks"]:
+                if prev_chunk.get("chunk_index", -1) < chunk_index:
+                    total_previous_windows += prev_chunk.get("windows_processed", 0)
+        
+        # Process each window
+        try:
+            logger.info(f"   Processing {len(windows)} windows...")
+            logger.info(f"   Absolute window index offset: {total_previous_windows} (from {len(sessions[session_id]['chunks'])} previous chunks)")
             window_predictions = []
             wheeze_windows = 0
             
             for window_idx, (window_audio, start_time) in enumerate(windows):
-                # Calculate absolute window index (chunk_index * 600 + window_idx)
-                absolute_window_idx = chunk_index * 600 + window_idx
+                try:
+                    # Calculate absolute window index across all chunks
+                    # Each window represents 0.25s of audio (stride), so window index = total_previous + current
+                    absolute_window_idx = total_previous_windows + window_idx
+                    
+                    # Calculate SNR for quality assessment
+                    snr = calculate_snr(window_audio, sample_rate)
+                    
+                    # Extract features
+                    features = prepare_mobile_features(
+                        window_audio,
+                        sr=sample_rate,
+                        window_length=1.0
+                    )
+                    
+                    # Run cough model (returns 6 values)
+                    (p_cough, p_attr_wet, p_attr_stridor, p_attr_choking, 
+                     p_attr_congestion, p_attr_wheezing_selfreport) = cough_model.predict(features)
+                    
+                    # Run wheeze model
+                    p_wheeze = wheeze_model.predict(features)
+                    if p_wheeze >= 0.5:
+                        wheeze_windows += 1
+                    
+                    # Store window prediction
+                    window_predictions.append(WindowPrediction(
+                        window_index=absolute_window_idx,
+                        p_cough=p_cough,
+                        p_attr_wet=p_attr_wet,
+                        p_attr_stridor=p_attr_stridor,
+                        p_attr_choking=p_attr_choking,
+                        p_attr_congestion=p_attr_congestion,
+                        p_attr_wheezing_selfreport=p_attr_wheezing_selfreport,
+                        p_wheeze=p_wheeze,
+                        snr=snr
+                    ))
+                except Exception as e:
+                    logger.warning(f"Error processing window {window_idx}: {e}", exc_info=True)
+                    # Continue with other windows
+                    continue
+        except Exception as e:
+            logger.error(f"Error in window processing loop: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to process audio windows: {str(e)}")
+        
+        # Detect cough events with hysteresis
+        try:
+            logger.info("   Detecting cough events...")
+            logger.info(f"   📊 Processing {len(window_predictions)} window predictions from model")
+            # Add comprehensive diagnostic logging for all p_cough values
+            if window_predictions:
+                # Log statistics for all windows
+                all_p_cough = [w.p_cough for w in window_predictions]
+                if all_p_cough:
+                    min_p_cough = min(all_p_cough)
+                    max_p_cough = max(all_p_cough)
+                    avg_p_cough = sum(all_p_cough) / len(all_p_cough)
+                    logger.info(f"   p_cough statistics: min={min_p_cough:.3f}, max={max_p_cough:.3f}, avg={avg_p_cough:.3f} (from {len(window_predictions)} windows)")
                 
-                # Calculate SNR for quality assessment
-                snr = calculate_snr(window_audio, sample_rate)
+                # Log windows with p_cough >= 0.3 (new threshold)
+                high_cough_windows = [w for w in window_predictions if w.p_cough >= 0.3]
+                logger.info(f"   Windows with p_cough >= 0.3: {len(high_cough_windows)}/{len(window_predictions)}")
+                if high_cough_windows:
+                    # Show top 10 p_cough values
+                    sorted_windows = sorted(high_cough_windows, key=lambda w: w.p_cough, reverse=True)
+                    logger.info(f"   Top p_cough values: {[f'{w.p_cough:.3f}' for w in sorted_windows[:10]]}")
                 
-                # Extract features
-                features = prepare_mobile_features(
-                    window_audio,
-                    sr=sample_rate,
-                    window_length=1.0
-                )
+                # Also log windows with p_cough >= 0.5 for comparison
+                very_high_cough_windows = [w for w in window_predictions if w.p_cough >= 0.5]
+                logger.info(f"   Windows with p_cough >= 0.5: {len(very_high_cough_windows)}/{len(window_predictions)}")
                 
-                # Run cough model (returns 6 values)
-                (p_cough, p_attr_wet, p_attr_stridor, p_attr_choking, 
-                 p_attr_congestion, p_attr_wheezing_selfreport) = cough_model.predict(features)
-                
-                # Run wheeze model
-                p_wheeze = wheeze_model.predict(features)
-                if p_wheeze >= 0.5:
-                    wheeze_windows += 1
-                
-                # Store window prediction
-                window_predictions.append(WindowPrediction(
-                    window_index=absolute_window_idx,
-                    p_cough=p_cough,
-                    p_attr_wet=p_attr_wet,
-                    p_attr_stridor=p_attr_stridor,
-                    p_attr_choking=p_attr_choking,
-                    p_attr_congestion=p_attr_congestion,
-                    p_attr_wheezing_selfreport=p_attr_wheezing_selfreport,
-                    p_wheeze=p_wheeze,
-                    snr=snr
-                ))
+                # Log p_cough time series for first 50 windows to see pattern
+                if len(window_predictions) > 0:
+                    logger.info(f"   📊 p_cough time series (first 50 windows, stride=0.25s):")
+                    time_series_str = ""
+                    for idx, w in enumerate(window_predictions[:50]):
+                        time_s = idx * 0.25
+                        marker = "🔴" if w.p_cough >= 0.3 else "⚪"
+                        time_series_str += f"{marker} {time_s:5.2f}s:{w.p_cough:.2f}  "
+                        if (idx + 1) % 10 == 0:  # New line every 10 windows
+                            logger.info(f"      {time_series_str}")
+                            time_series_str = ""
+                    if time_series_str:
+                        logger.info(f"      {time_series_str}")
             
-            # Detect cough events with hysteresis
-            cough_events = detect_cough_events_with_hysteresis(window_predictions)
+            # Use improved event grouping that better separates individual coughs
+            # Lowered threshold from 0.5 to 0.3 for increased sensitivity
+            # Added logic to split events when p_cough drops significantly or there's a gap
+            from app.preprocessing.event_detection import group_cough_events_simple
+            cough_events = group_cough_events_simple(
+                window_predictions,
+                threshold=0.3,  # Lowered from 0.5 to 0.3 for increased sensitivity
+                tile_seconds=1.0,
+                stride_seconds=0.25,
+                min_gap_ms=3000,  # Minimum 3 seconds gap between events to count as separate coughs
+                min_drop=0.15  # Split if p_cough drops by 0.15 even if still above threshold
+            )
             
-            # Filter out events with INSUFFICIENT_SIGNAL quality flag
-            valid_events = [e for e in cough_events if e.quality_flag != "INSUFFICIENT_SIGNAL"]
+            # Disabled SNR quality filtering to increase sensitivity
+            # All detected events are now considered valid
+            valid_events = cough_events  # Removed SNR filtering
+            logger.info(f"   Detected {len(cough_events)} total events (SNR filtering disabled for increased sensitivity)")
             
-            # Adjust event timestamps to be relative to chunk start
-            chunk_start_ms = chunk_index * 600 * 1000  # 10 minutes = 600 seconds = 600000ms
-            for event in valid_events:
-                event.start_ms += chunk_start_ms
-                event.end_ms += chunk_start_ms
-            
-            # Store chunk results
+            if valid_events:
+                logger.info(f"   Event details:")
+                for i, event in enumerate(valid_events[:10]):  # Log first 10 events
+                    duration_s = (event.end_ms - event.start_ms) / 1000.0
+                    logger.info(f"     Event {i+1}: {duration_s:.2f}s, confidence={event.confidence:.3f}, tags={event.tags}")
+        except Exception as e:
+            logger.error(f"Error detecting cough events: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to detect cough events: {str(e)}")
+        
+        # Adjust event timestamps to be absolute (relative to session start)
+        # Each window index represents 0.25s, so multiply by 250ms
+        # chunk_start_ms = total_previous_windows * 250  # milliseconds
+        # Actually, events already have timestamps relative to chunk start (in ms)
+        # We need to add the chunk's start time in milliseconds
+        # With stride=0.25s, chunk start time = total_previous_windows * 250ms
+        chunk_start_ms = total_previous_windows * 250  # milliseconds
+        for event in valid_events:
+            event.start_ms += chunk_start_ms
+            event.end_ms += chunk_start_ms
+        
+        # Store chunk results
+        try:
             chunk_result = {
                 "chunk_index": chunk_index,
                 "cough_count": len(valid_events),
@@ -516,8 +738,17 @@ async def process_chunk(
             
             sessions[session_id]["chunks"].append(chunk_result)
             
-            logger.info(f"Chunk {chunk_index} processed: {len(valid_events)} cough events, {wheeze_windows} wheeze windows")
-            
+            logger.info(f"✅ Chunk {chunk_index} processed: {len(valid_events)} COUGH EVENTS DETECTED, {wheeze_windows} wheeze windows")
+            logger.info(f"   📊 COUGH COUNT = {len(valid_events)} (this is the NUMBER of coughs, not a percentage!)")
+            logger.info(f"   Session {session_id} now has {len(sessions[session_id]['chunks'])} total chunks")
+            if len(valid_events) > 0:
+                logger.info(f"   Event details: {[(e.start_ms/1000, e.end_ms/1000, e.confidence) for e in valid_events[:5]]}")
+        except Exception as e:
+            logger.error(f"Error storing chunk results: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to store chunk results: {str(e)}")
+        
+        # Return response
+        try:
             return ChunkProcessResponse(
                 chunk_index=chunk_index,
                 session_id=session_id,
@@ -526,20 +757,28 @@ async def process_chunk(
                 windows_processed=len(windows),
                 detected_events=valid_events
             )
+        except Exception as e:
+            logger.error(f"Error creating response: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to create response: {str(e)}")
             
-        finally:
-            # Clean up temporary file
-            if temp_file_path and os.path.exists(temp_file_path):
-                try:
-                    os.remove(temp_file_path)
-                except Exception as e:
-                    logger.warning(f"Error removing temporary file: {e}")
-    
     except HTTPException:
+        # Re-raise HTTP exceptions as-is (they already have proper status codes)
         raise
     except Exception as e:
-        logger.error(f"Error processing chunk: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        # Catch-all for any unexpected errors
+        logger.error(f"❌ Unexpected error processing chunk {chunk_index} for session {session_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Internal server error: {type(e).__name__}: {str(e)}"
+        )
+    finally:
+        # Clean up temporary file
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+                logger.debug(f"   Cleaned up temporary file: {temp_file_path}")
+            except Exception as e:
+                logger.warning(f"Error removing temporary file {temp_file_path}: {e}")
 
 
 @app.post("/final-summary/{session_id}", response_model=NightlySummary)
@@ -558,14 +797,28 @@ async def get_final_summary(
         Complete nightly summary with all metrics and pattern scores
     """
     try:
+        # Auto-create session if it doesn't exist (in case chunks failed to register)
         if session_id not in sessions:
-            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+            logger.warning(f"Session {session_id} not found in storage. This may indicate that no chunks were successfully processed. Creating empty session.")
+            sessions[session_id] = {
+                "session_id": session_id,
+                "patient_id": None,
+                "age": None,
+                "sex": None,
+                "chunks": [],
+                "start_time": datetime.now(),
+                "last_update": datetime.now()
+            }
         
         session = sessions[session_id]
         chunks = session["chunks"]
         
         if not chunks:
-            raise HTTPException(status_code=400, detail="No chunks processed for this session")
+            logger.warning(f"Session {session_id} exists but has no processed chunks. This may indicate that chunks failed to process or were not received.")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"No chunks processed for session {session_id}. Please ensure chunks were successfully sent to /process-chunk endpoint."
+            )
         
         # Aggregate all events and window predictions
         all_cough_events = []
@@ -767,23 +1020,62 @@ def _calculate_attribute_prevalence(
 ) -> AttributePrevalence:
     """Calculate attribute prevalence from windows and events."""
     if not window_predictions:
+        logger.warning("No window predictions available for attribute prevalence calculation")
         return AttributePrevalence()
     
     # Calculate from windows (tiles)
     total_windows = len(window_predictions)
+    logger.info(f"Calculating attribute prevalence from {total_windows} window predictions")
+    
+    # Log sample attribute probabilities to debug
+    if window_predictions:
+        sample = window_predictions[0]
+        logger.info(f"Sample window prediction: p_attr_wet={sample.p_attr_wet:.3f}, p_attr_stridor={sample.p_attr_stridor:.3f}, p_attr_choking={sample.p_attr_choking:.3f}, p_attr_congestion={sample.p_attr_congestion:.3f}, p_attr_wheezing={sample.p_attr_wheezing_selfreport:.3f}")
+    
+    # Count windows with attribute probabilities >= 0.5
     wet_count = sum(1 for w in window_predictions if w.p_attr_wet >= 0.5)
     stridor_count = sum(1 for w in window_predictions if w.p_attr_stridor >= 0.5)
     choking_count = sum(1 for w in window_predictions if w.p_attr_choking >= 0.5)
     congestion_count = sum(1 for w in window_predictions if w.p_attr_congestion >= 0.5)
     wheezing_count = sum(1 for w in window_predictions if w.p_attr_wheezing_selfreport >= 0.5)
     
-    return AttributePrevalence(
-        wet=(wet_count / total_windows) * 100.0 if total_windows > 0 else 0.0,
-        stridor=(stridor_count / total_windows) * 100.0 if total_windows > 0 else 0.0,
-        choking=(choking_count / total_windows) * 100.0 if total_windows > 0 else 0.0,
-        congestion=(congestion_count / total_windows) * 100.0 if total_windows > 0 else 0.0,
-        selfreported_wheezing=(wheezing_count / total_windows) * 100.0 if total_windows > 0 else 0.0
+    # Log sample values to debug
+    if window_predictions:
+        sample_attrs = window_predictions[0]
+        logger.info(f"🔍 Sample window attribute values: wet={sample_attrs.p_attr_wet:.3f}, stridor={sample_attrs.p_attr_stridor:.3f}, choking={sample_attrs.p_attr_choking:.3f}, congestion={sample_attrs.p_attr_congestion:.3f}, wheezing={sample_attrs.p_attr_wheezing_selfreport:.3f}")
+        
+        # Check if all values are 1.0 (which would indicate a problem)
+        all_wet = [w.p_attr_wet for w in window_predictions[:10]]
+        logger.info(f"🔍 First 10 p_attr_wet values: {all_wet}")
+    
+    # Also calculate average probabilities (not just threshold counts)
+    avg_wet = sum(w.p_attr_wet for w in window_predictions) / total_windows if total_windows > 0 else 0.0
+    avg_stridor = sum(w.p_attr_stridor for w in window_predictions) / total_windows if total_windows > 0 else 0.0
+    avg_choking = sum(w.p_attr_choking for w in window_predictions) / total_windows if total_windows > 0 else 0.0
+    avg_congestion = sum(w.p_attr_congestion for w in window_predictions) / total_windows if total_windows > 0 else 0.0
+    avg_wheezing = sum(w.p_attr_wheezing_selfreport for w in window_predictions) / total_windows if total_windows > 0 else 0.0
+    
+    logger.info(f"Attribute counts (>=0.5): wet={wet_count}, stridor={stridor_count}, choking={choking_count}, congestion={congestion_count}, wheezing={wheezing_count}")
+    logger.info(f"Average attribute probabilities: wet={avg_wet:.3f}, stridor={avg_stridor:.3f}, choking={avg_choking:.3f}, congestion={avg_congestion:.3f}, wheezing={avg_wheezing:.3f}")
+    
+    # Check if averages are suspiciously high (all 1.0)
+    if avg_wet >= 0.99 and avg_stridor >= 0.99 and avg_choking >= 0.99 and avg_congestion >= 0.99 and avg_wheezing >= 0.99:
+        logger.error(f"⚠️⚠️⚠️ ALL ATTRIBUTE PROBABILITIES ARE ~1.0! This indicates a problem with model output processing. Check if model is outputting logits that need sigmoid, or if values are being clamped incorrectly.")
+        logger.error(f"   Sample window values: {sample_attrs.p_attr_wet:.3f}, {sample_attrs.p_attr_stridor:.3f}, {sample_attrs.p_attr_choking:.3f}, {sample_attrs.p_attr_congestion:.3f}, {sample_attrs.p_attr_wheezing_selfreport:.3f}")
+    
+    # Calculate percentages - use AVERAGE PROBABILITIES (not threshold counts)
+    # This gives the actual percentage from model output, not just binary threshold
+    result = AttributePrevalence(
+        wet=avg_wet * 100.0,  # Convert probability (0-1) to percentage (0-100)
+        stridor=avg_stridor * 100.0,
+        choking=avg_choking * 100.0,
+        congestion=avg_congestion * 100.0,
+        selfreported_wheezing=avg_wheezing * 100.0
     )
+    
+    logger.info(f"Attribute prevalence result: wet={result.wet:.1f}%, stridor={result.stridor:.1f}%, choking={result.choking:.1f}%, congestion={result.congestion:.1f}%, wheezing={result.selfreported_wheezing:.1f}%")
+    
+    return result
 
 
 def _calculate_hourly_breakdown(

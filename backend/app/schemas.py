@@ -1,8 +1,9 @@
 """
 Pydantic models for request/response validation.
+Pydantic v2 compatible with FastAPI.
 """
-from typing import Optional, List, Dict
-from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, Field, ConfigDict
 from enum import Enum
 
 
@@ -117,7 +118,7 @@ class HourlyMetrics(BaseModel):
     hour: int = Field(..., ge=0, le=23, description="Hour of day (0-23)")
     cough_count: int = Field(0, description="Number of coughs in this hour")
     wheeze_percent: float = Field(0.0, ge=0.0, le=100.0, description="Percentage of time with wheeze in this hour")
-    events: List["CoughEvent"] = Field(default_factory=list, description="Cough events in this hour")
+    events: List[CoughEvent] = Field(default_factory=list, description="Cough events in this hour")
 
 
 class TrendComparison(BaseModel):
@@ -227,3 +228,31 @@ class AudioAnalysisResponse(BaseModel):
     dedalus_interpretation: Optional[DedalusInterpretation] = None
     processing_time_seconds: float = Field(..., description="Total processing time")
     windows_analyzed: int = Field(..., description="Number of 1-second windows analyzed")
+
+
+# Rebuild all models to resolve forward references for OpenAPI schema generation
+# This ensures all nested model references are properly resolved for FastAPI's OpenAPI schema
+# Rebuild in dependency order (dependencies first, then dependents)
+
+# Base models (no dependencies)
+DetectedEvent.model_rebuild()
+DedalusInterpretation.model_rebuild()
+WindowPrediction.model_rebuild()
+CoughEvent.model_rebuild()
+SymptomForm.model_rebuild()
+PatternScore.model_rebuild()
+AttributePrevalence.model_rebuild()
+TrendComparison.model_rebuild()
+QualityMetrics.model_rebuild()
+DisplayStrings.model_rebuild()
+
+# Models with dependencies
+HourlyMetrics.model_rebuild()
+NightlySummary.model_rebuild()
+ChunkProcessResponse.model_rebuild()
+AudioAnalysisResponse.model_rebuild()
+MobileSummaryRequest.model_rebuild()
+NightlySummaryResponse.model_rebuild()
+ChunkProcessRequest.model_rebuild()
+FinalSummaryRequest.model_rebuild()
+AudioAnalysisRequest.model_rebuild()

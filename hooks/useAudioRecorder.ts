@@ -28,22 +28,122 @@ export interface UseAudioRecorderReturn {
 }
 
 /**
- * Convert audio blob to WAV format (if needed)
- * MediaRecorder on web already produces WAV/WebM, so we may just need to pass it through
+ * Convert AudioBuffer to WAV Blob
+ */
+function audioBufferToWav(buffer: AudioBuffer): Blob {
+  const numChannels = buffer.numberOfChannels;
+  const sampleRate = buffer.sampleRate;
+  const format = 1; // PCM
+  const bitDepth = 16;
+  
+  const bytesPerSample = bitDepth / 8;
+  const blockAlign = numChannels * bytesPerSample;
+  
+  const length = buffer.length * numChannels * bytesPerSample;
+  const arrayBuffer = new ArrayBuffer(44 + length);
+  const view = new DataView(arrayBuffer);
+  
+  // WAV header
+  const writeString = (offset: number, string: string) => {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i));
+    }
+  };
+  
+  writeString(0, 'RIFF');
+  view.setUint32(4, 36 + length, true);
+  writeString(8, 'WAVE');
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true); // fmt chunk size
+  view.setUint16(20, format, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitDepth, true);
+  writeString(36, 'data');
+  view.setUint32(40, length, true);
+  
+  // Convert audio data
+  let offset = 44;
+  for (let i = 0; i < buffer.length; i++) {
+    for (let channel = 0; channel < numChannels; channel++) {
+      const sample = Math.max(-1, Math.min(1, buffer.getChannelData(channel)[i]));
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+      offset += 2;
+    }
+  }
+  
+  return new Blob([arrayBuffer], { type: 'audio/wav' });
+}
+
+/**
+ * Resample AudioBuffer to target sample rate
+ */
+async function resampleAudioBuffer(buffer: AudioBuffer, targetSampleRate: number): Promise<AudioBuffer> {
+  const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
+    sampleRate: targetSampleRate,
+  });
+  
+  const ratio = buffer.sampleRate / targetSampleRate;
+  const newLength = Math.round(buffer.length / ratio);
+  const newBuffer = audioContext.createBuffer(buffer.numberOfChannels, newLength, targetSampleRate);
+  
+  for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+    const oldData = buffer.getChannelData(channel);
+    const newData = newBuffer.getChannelData(channel);
+    
+    for (let i = 0; i < newLength; i++) {
+      const index = Math.floor(i * ratio);
+      newData[i] = oldData[index];
+    }
+  }
+  
+  return newBuffer;
+}
+
+/**
+ * Convert audio blob to WAV format using Web Audio API
+ * 
+ * This function converts WebM/other formats to WAV on the client side
+ * before sending to the backend, which expects WAV format.
  */
 async function prepareAudioBlob(blob: Blob): Promise<Blob> {
-  // For web, MediaRecorder typically produces WebM or WAV
-  // Backend expects WAV, so we may need conversion
-  // For MVP, we'll try sending as-is and see if backend accepts it
-  // If not, we'd need a WebM to WAV converter library
-  
   // Check if it's already WAV
   if (blob.type === 'audio/wav' || blob.type === 'audio/wave') {
+    console.log('✅ Audio is already WAV format');
     return blob;
   }
   
-  // For now, return as-is - backend may accept WebM or we'll need to add conversion
-  return blob;
+  // Convert WebM/other formats to WAV using Web Audio API
+  try {
+    console.log(`🔄 Converting ${blob.type} to WAV...`);
+    const arrayBuffer = await blob.arrayBuffer();
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+    
+    console.log(`📊 Audio buffer info:`, {
+      duration: audioBuffer.duration.toFixed(2) + 's',
+      sampleRate: audioBuffer.sampleRate,
+      numberOfChannels: audioBuffer.numberOfChannels,
+      length: audioBuffer.length,
+    });
+    
+    // Resample to 16kHz if needed (backend expects 16kHz)
+    let processedBuffer = audioBuffer;
+    if (audioBuffer.sampleRate !== SAMPLE_RATE) {
+      console.log(`🔄 Resampling from ${audioBuffer.sampleRate}Hz to ${SAMPLE_RATE}Hz...`);
+      processedBuffer = await resampleAudioBuffer(audioBuffer, SAMPLE_RATE);
+    }
+    
+    // Convert AudioBuffer to WAV
+    const wavBlob = audioBufferToWav(processedBuffer);
+    console.log(`✅ Converted ${blob.type} to WAV: ${(blob.size / 1024).toFixed(2)} KB -> ${(wavBlob.size / 1024).toFixed(2)} KB`);
+    return wavBlob;
+  } catch (error) {
+    console.error('❌ Error converting audio to WAV:', error);
+    throw new Error(`Failed to convert audio to WAV format: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
 }
 
 export function useAudioRecorder(
@@ -135,15 +235,20 @@ export function useAudioRecorder(
       mediaRecorder.ondataavailable = async (event) => {
         if (event.data.size > 0) {
           webChunksRef.current.push(event.data);
+          console.log(`📦 Data available: ${(event.data.size / 1024).toFixed(2)} KB, total chunks: ${webChunksRef.current.length}`);
           
           // When we have a complete chunk (10 minutes), process it
-          if (Date.now() - (lastChunkTimeRef.current || 0) >= CHUNK_DURATION_MS) {
+          const timeSinceLastChunk = Date.now() - (lastChunkTimeRef.current || 0);
+          if (timeSinceLastChunk >= CHUNK_DURATION_MS) {
             const chunkBlob = new Blob(webChunksRef.current, { type: 'audio/webm' });
+            console.log(`⏰ 10 minutes elapsed, processing chunk ${chunkIndex}...`);
             await processAndSendChunk(chunkBlob, chunkIndex, sessionId);
             webChunksRef.current = []; // Clear chunks
             chunkIndex++;
             lastChunkTimeRef.current = Date.now();
           }
+        } else {
+          console.warn('⚠️ Data available event fired but data size is 0');
         }
       };
 
@@ -302,15 +407,34 @@ export function useAudioRecorder(
     return new Promise<void>((resolve) => {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         // Request any remaining data before stopping
+        console.log('🛑 Stopping MediaRecorder, requesting final data...');
         mediaRecorderRef.current.requestData();
+        
+        // Stop the recorder
         mediaRecorderRef.current.stop();
+        
+        // Wait a bit for ondataavailable to fire (the existing handler will collect the data)
+        // This ensures any final data is captured before we resolve
+        setTimeout(() => {
+          const totalSize = webChunksRef.current.reduce((sum, chunk) => sum + chunk.size, 0);
+          console.log(`🛑 MediaRecorder stopped. Total chunks: ${webChunksRef.current.length}, total size: ${(totalSize / 1024).toFixed(2)} KB`);
+          resolve();
+        }, 500); // Give time for final data event
+      } else {
+        resolve();
       }
+      
+      // Stop media tracks
       if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current.getTracks().forEach((track) => {
+          track.stop();
+          console.log('🔇 Stopped media track');
+        });
         mediaStreamRef.current = null;
       }
-      mediaRecorderRef.current = null;
-      resolve();
+      
+      // Don't null the recorder ref yet - we need it for sendFinalChunk
+      // mediaRecorderRef.current = null;
     });
   }, []);
 
@@ -354,7 +478,10 @@ export function useAudioRecorder(
 
   // Send final chunk
   const sendFinalChunk = useCallback(async () => {
-    if (!recordingState.sessionId || !recordingState.isRecording) {
+    // Get sessionId from current state (don't rely on recordingState which might be stale)
+    const currentSessionId = recordingState.sessionId;
+    if (!currentSessionId) {
+      console.warn('⚠️ No session ID available for final chunk');
       return;
     }
 
@@ -362,16 +489,44 @@ export function useAudioRecorder(
       let blob: Blob | null = null;
 
       if (isWeb) {
-        // For web, use the chunks we've been collecting
-        if (webChunksRef.current.length > 0) {
-          const chunkBlob = new Blob(webChunksRef.current, { type: 'audio/webm' });
+        // For web, we need to wait for MediaRecorder to provide all data
+        // Request final data and wait for it
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+          // Request any remaining data
+          mediaRecorderRef.current.requestData();
+          
+          // Wait a bit for ondataavailable to fire
+          await new Promise((resolve) => setTimeout(resolve, 300));
+        }
+
+        // Collect all chunks we have (even if recording was very short)
+        const chunksToSend = [...webChunksRef.current];
+        console.log(`📤 Preparing final chunk: ${chunksToSend.length} blob chunks, total size: ${chunksToSend.reduce((sum, c) => sum + c.size, 0)} bytes`);
+        
+        if (chunksToSend.length > 0) {
+          const chunkBlob = new Blob(chunksToSend, { type: 'audio/webm' });
+          console.log(`📤 Final chunk blob size: ${(chunkBlob.size / 1024).toFixed(2)} KB`);
+          
           if (chunkBlob.size > 0) {
+            const currentChunkIndex = recordingState.chunkIndex;
+            console.log(`📤 Sending final chunk (index ${currentChunkIndex}) to backend...`);
             await processAndSendChunk(
               chunkBlob,
-              recordingState.chunkIndex,
-              recordingState.sessionId!
+              currentChunkIndex,
+              currentSessionId
             );
             webChunksRef.current = []; // Clear after sending
+            console.log(`✅ Final chunk sent successfully`);
+          } else {
+            console.warn('⚠️ Final chunk blob is empty (0 bytes)');
+          }
+        } else {
+          console.warn('⚠️ No chunks collected for final chunk - recording may have been too short or no data was captured');
+          // Still try to send an empty blob or create a minimal one to ensure session is created
+          // But actually, we should still send something to ensure the session exists
+          const emptyBlob = new Blob([], { type: 'audio/webm' });
+          if (emptyBlob.size === 0) {
+            console.warn('⚠️ Cannot send empty blob. Recording may have been too short.');
           }
         }
         return;
@@ -380,14 +535,20 @@ export function useAudioRecorder(
         if (uri) {
           const response = await fetch(uri);
           blob = await response.blob();
+          console.log(`📤 Final chunk (native): ${(blob.size / 1024).toFixed(2)} KB`);
           if (blob && blob.size > 0) {
-            await processAndSendChunk(blob, recordingState.chunkIndex, recordingState.sessionId);
+            await processAndSendChunk(blob, recordingState.chunkIndex, currentSessionId);
+            console.log(`✅ Final chunk sent successfully`);
+          } else {
+            console.warn('⚠️ Final chunk blob is empty (0 bytes)');
           }
+        } else {
+          console.warn('⚠️ No recording URI available for final chunk');
         }
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to send final chunk';
-      console.error('Error sending final chunk:', error);
+      console.error('❌ Error sending final chunk:', error);
       if (onError) {
         onError(errorMessage);
       }

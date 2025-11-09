@@ -16,7 +16,7 @@ enum TabName {
 
 export default function TabLayout() {
   const themeColors = Colors.dark;
-  const { recordingState, startRecording, stopRecording, chunkResponses, finalSummary } = useRecording();
+  const { recordingState, startRecording, stopRecording, chunkResponses, finalSummary, isFetchingSummary, summaryProgress } = useRecording();
   const [errorSnackbar, setErrorSnackbar] = useState<string | null>(null);
   const [successSnackbar, setSuccessSnackbar] = useState<string | null>(null);
   const [recordingDuration, setRecordingDuration] = useState<number>(0);
@@ -123,12 +123,38 @@ export default function TabLayout() {
         overflow: 'hidden',
       }}
     >
-      {/* Recording Indicator Banner */}
-      {recordingState.isRecording && (
+      {/* Processing Summary Banner */}
+      {isFetchingSummary && (
         <Box
           sx={{
             position: 'fixed',
             top: 0,
+            left: 0,
+            right: 0,
+            backgroundColor: '#2196F3',
+            color: 'white',
+            padding: '12px 20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 2,
+            zIndex: 1001,
+            boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+          }}
+        >
+          <CircularProgress size={16} sx={{ color: 'white' }} />
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+            {summaryProgress || 'Processing final summary...'}
+          </Typography>
+        </Box>
+      )}
+
+      {/* Recording Indicator Banner */}
+      {recordingState.isRecording && !isFetchingSummary && (
+        <Box
+          sx={{
+            position: 'fixed',
+            top: isFetchingSummary ? '56px' : 0,
             left: 0,
             right: 0,
             backgroundColor: '#ff4444',
@@ -175,7 +201,7 @@ export default function TabLayout() {
         sx={{
           flex: 1,
           overflowY: 'auto',
-          paddingTop: recordingState.isRecording ? '56px' : 0,
+          paddingTop: (recordingState.isRecording || isFetchingSummary) ? '56px' : 0,
         }}
       >
         <Slot />
@@ -187,9 +213,9 @@ export default function TabLayout() {
         disabled={recordingState.isProcessing}
         style={{
           position: 'fixed',
-          bottom: 40,
+          bottom: 120,
           right: 40,
-          zIndex: 1,
+          zIndex: 1002,
           backgroundColor: recordingState.isRecording ? '#ff4444' : themeColors.text,
           color: themeColors.background,
         }}

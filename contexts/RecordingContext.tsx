@@ -13,6 +13,7 @@ interface RecordingContextType {
   stopRecording: () => Promise<void>;
   finalSummary: NightlySummary | null;
   isFetchingSummary: boolean;
+  summaryProgress: string | null;
   fetchFinalSummary: (symptomForm?: any) => Promise<void>;
   chunkResponses: ChunkProcessResponse[];
 }
@@ -22,6 +23,7 @@ const RecordingContext = createContext<RecordingContextType | undefined>(undefin
 export function RecordingProvider({ children }: { children: ReactNode }) {
   const [finalSummary, setFinalSummary] = useState<NightlySummary | null>(null);
   const [isFetchingSummary, setIsFetchingSummary] = useState(false);
+  const [summaryProgress, setSummaryProgress] = useState<string | null>(null);
   const [chunkResponses, setChunkResponses] = useState<ChunkProcessResponse[]>([]);
 
   const handleChunkProcessed = useCallback((response: ChunkProcessResponse) => {
@@ -43,18 +45,43 @@ export function RecordingProvider({ children }: { children: ReactNode }) {
       }
 
       setIsFetchingSummary(true);
+      setSummaryProgress('Initializing...');
+      
       try {
-        const summary = await getFinalSummary(recordingState.sessionId, symptomForm);
+        // Update progress messages
+        const progressMessages: string[] = [];
+        const updateProgress = (message: string) => {
+          progressMessages.push(message);
+          setSummaryProgress(message);
+          console.log(`📊 Summary progress: ${message}`);
+        };
+
+        const summary = await getFinalSummary(recordingState.sessionId, symptomForm, updateProgress);
+        
         setFinalSummary(summary);
+        setSummaryProgress('Complete!');
         
         // Auto-save to history if enabled
         const settings = await getSettings();
         if (settings.autoSaveRecordings) {
+          updateProgress('Saving to history...');
           await saveRecordingToHistory(summary);
         }
+        
+        // Clear progress after a moment
+        setTimeout(() => {
+          setSummaryProgress(null);
+        }, 2000);
       } catch (error) {
         console.error('Failed to fetch final summary:', error);
-        handleError(error instanceof Error ? error.message : 'Failed to fetch summary');
+        const errorMessage = error instanceof Error ? error.message : 'Failed to fetch summary';
+        setSummaryProgress(`Error: ${errorMessage}`);
+        handleError(errorMessage);
+        
+        // Clear progress after showing error
+        setTimeout(() => {
+          setSummaryProgress(null);
+        }, 5000);
       } finally {
         setIsFetchingSummary(false);
       }
@@ -72,21 +99,23 @@ export function RecordingProvider({ children }: { children: ReactNode }) {
     const wasRecording = recordingState.isRecording;
     const sessionId = recordingState.sessionId;
     
-    // Send final chunk if recording was active
+    // First, stop the recording (this will trigger final data events)
+    await stopRec();
+    
+    // Then send final chunk (even if recording was very short)
+    // This ensures any remaining audio data is sent as a chunk
     if (wasRecording && sessionId) {
       try {
-        console.log('Sending final chunk...');
+        console.log('📤 Sending final chunk (may be short recording)...');
         await sendFinalChunk();
-        console.log('Final chunk sent successfully');
+        console.log('✅ Final chunk sent successfully');
         // Wait a moment for the chunk to be processed and added to chunkResponses
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        await new Promise((resolve) => setTimeout(resolve, 1000));
       } catch (error) {
-        console.error('Error sending final chunk:', error);
-        // Continue even if final chunk fails
+        console.error('❌ Error sending final chunk:', error);
+        // Continue even if final chunk fails - we'll still try to get summary
       }
     }
-    
-    await stopRec();
     
     // Automatically fetch final summary if we have a session
     // Check chunkResponses again after final chunk might have been added
@@ -94,16 +123,30 @@ export function RecordingProvider({ children }: { children: ReactNode }) {
       // Wait a bit longer to ensure backend has processed everything
       setTimeout(async () => {
         try {
-          console.log('Fetching final summary for session:', sessionId);
-          console.log('Current chunk count:', chunkResponses.length);
+          console.log('📊 Fetching final summary for session:', sessionId);
+          // Get updated chunk count
+          const updatedChunkCount = chunkResponses.length;
+          console.log('📊 Current chunk count:', updatedChunkCount);
+          
+          if (updatedChunkCount === 0) {
+            console.warn('⚠️ No chunks were processed. This may indicate the recording was too short or chunks failed to send.');
+            handleError('No audio chunks were processed. Please ensure you recorded for at least a few seconds.');
+            return;
+          }
+          
           await fetchFinalSummary();
-          console.log('Final summary fetched successfully');
+          console.log('✅ Final summary fetched successfully');
         } catch (error) {
-          console.error('Error fetching final summary:', error);
+          console.error('❌ Error fetching final summary:', error);
           // Show error to user
-          handleError(`Failed to fetch summary: ${error instanceof Error ? error.message : 'Unknown error'}`);
+          const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+          if (errorMsg.includes('not found')) {
+            handleError('Session not found. No chunks were successfully processed. Please try recording again.');
+          } else {
+            handleError(`Failed to fetch summary: ${errorMsg}`);
+          }
         }
-      }, 2000); // Increased delay to 2 seconds
+      }, 2000); // Wait 2 seconds for backend to process
     }
   }, [stopRec, sendFinalChunk, recordingState.isRecording, recordingState.sessionId, chunkResponses.length, fetchFinalSummary, handleError]);
 
@@ -115,6 +158,7 @@ export function RecordingProvider({ children }: { children: ReactNode }) {
         stopRecording,
         finalSummary,
         isFetchingSummary,
+        summaryProgress,
         fetchFinalSummary,
         chunkResponses,
       }}

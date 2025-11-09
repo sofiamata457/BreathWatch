@@ -20,36 +20,103 @@ def load_audio(file_path: str, target_sr: int = 16000) -> Tuple[np.ndarray, int]
     """
     Load audio file and resample to target sample rate.
     
+    Supports: WAV, MP3, M4A, OGG, FLAC
+    WebM files should be converted to WAV on the frontend before sending.
+    
     Args:
         file_path: Path to audio file
         target_sr: Target sample rate (default 16000 Hz)
     
     Returns:
         Tuple of (audio_array, sample_rate)
+    
+    Raises:
+        ValueError: If file cannot be loaded or format is unsupported
+        FileNotFoundError: If file doesn't exist
     """
+    import os
+    
+    # Check if file exists
+    if not os.path.exists(file_path):
+        error_msg = f"Audio file not found: {file_path}"
+        logger.error(error_msg)
+        raise FileNotFoundError(error_msg)
+    
+    # Check file size
+    file_size = os.path.getsize(file_path)
+    if file_size == 0:
+        error_msg = f"Audio file is empty: {file_path}"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+    
+    logger.info(f"Attempting to load audio: {file_path} ({file_size} bytes)")
+    
     try:
+        # Try loading with librosa
         audio, sr = librosa.load(file_path, sr=target_sr, mono=True)
-        logger.info(f"Loaded audio: {file_path}, duration: {len(audio)/sr:.2f}s, sr: {sr}")
+        
+        if len(audio) == 0:
+            error_msg = f"Loaded audio is empty: {file_path}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        logger.info(f"✅ Loaded audio: {file_path}, duration: {len(audio)/sr:.2f}s, sr: {sr}Hz, samples: {len(audio)}")
         return audio, sr
-    except Exception as e:
-        logger.error(f"Error loading audio {file_path}: {e}")
+        
+    except FileNotFoundError:
+        # Re-raise file not found errors
         raise
+    except Exception as e:
+        # Provide detailed error message
+        error_type = type(e).__name__
+        error_msg = str(e) if str(e) else f"{error_type} occurred"
+        
+        # Check file extension for format hints
+        file_ext = os.path.splitext(file_path)[1].lower()
+        
+        if file_ext == '.webm':
+            detailed_error = (
+                f"WebM format detected. librosa may not support WebM without ffmpeg. "
+                f"Please convert to WAV on the frontend before sending. "
+                f"Original error: {error_msg}"
+            )
+        elif file_ext in ['.mp3', '.m4a', '.aac']:
+            detailed_error = (
+                f"Audio format {file_ext} may require additional codecs. "
+                f"Ensure ffmpeg is installed. Original error: {error_msg}"
+            )
+        else:
+            detailed_error = (
+                f"Failed to load audio file {file_path} (format: {file_ext or 'unknown'}). "
+                f"Error type: {error_type}, Message: {error_msg}. "
+                f"Supported formats: WAV, MP3, M4A, OGG, FLAC. "
+                f"WebM files must be converted to WAV on the frontend."
+            )
+        
+        logger.error(f"❌ {detailed_error}", exc_info=True)
+        raise ValueError(detailed_error)
 
 
-def trim_silence(audio: np.ndarray, sr: int, top_db: int = 20) -> np.ndarray:
+def trim_silence(audio: np.ndarray, sr: int, top_db: int = 40) -> np.ndarray:
     """
     Trim silence from the beginning and end of audio.
+    
+    Matches reference script: uses top_db=40 for consistency with training pipeline.
     
     Args:
         audio: Audio array
         sr: Sample rate
-        top_db: Threshold in dB below reference for silence
+        top_db: Threshold in dB below reference for silence (default 40, matching reference)
     
     Returns:
-        Trimmed audio array
+        Trimmed audio array (or original if trimming fails)
     """
     try:
         trimmed, _ = librosa.effects.trim(audio, top_db=top_db)
+        if trimmed.size == 0:
+            # If trimming results in empty audio, return original
+            logger.warning("Trimmed audio is empty, returning original")
+            return audio
         logger.debug(f"Trimmed silence: {len(audio)/sr:.2f}s -> {len(trimmed)/sr:.2f}s")
         return trimmed
     except Exception as e:
