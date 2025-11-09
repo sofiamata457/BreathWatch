@@ -140,7 +140,10 @@ export const CoughChart: React.FC<CoughChartProps> = ({
             justifyContent: 'center',
           }}
         >
-          <Typography variant="body2" sx={{ color: themeColors.text, opacity: 0.7 }}>
+          <Typography
+            variant="body2"
+            sx={{ color: themeColors.text, opacity: 0.7, textAlign: 'center' }}
+          >
             Timeline will appear once the first chunk is processed.
           </Typography>
         </Box>
