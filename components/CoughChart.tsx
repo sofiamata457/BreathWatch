@@ -62,7 +62,7 @@ export const CoughChart: React.FC<CoughChartProps> = ({ counts, labels, breakdow
         sx={{
           maxWidth: 'calc(100dvw - 40px)',
           marginLeft: '20px',
-          my: '20px',
+          my: '30px',
           background: `linear-gradient(-45deg, ${themeColors.secondary} 25%, ${themeColors.tertiary})`,
           borderRadius: '25px',
           boxShadow: `3px 3px 0 ${themeColors.text}`,
@@ -134,7 +134,7 @@ export const CoughChart: React.FC<CoughChartProps> = ({ counts, labels, breakdow
         sx={{
           maxWidth: 'calc(100dvw - 40px)',
           marginLeft: '20px',
-          my: '20px',
+          my: '30px',
           background: `linear-gradient(-45deg, ${themeColors.secondary} 25%, ${themeColors.tertiary})`,
           borderRadius: '25px',
           boxShadow: `3px 3px 0 ${themeColors.text}`,
@@ -211,19 +211,19 @@ export const CoughChart: React.FC<CoughChartProps> = ({ counts, labels, breakdow
       </Box>
       <Box
         sx={{
-          maxWidth: 'calc(100dvw - 40px)',
+          maxWidth: 'calc(100dvw - 80px)',
           marginLeft: '20px',
-          my: '20px',
+          my: '30px',
           background: `linear-gradient(-45deg, ${themeColors.secondary} 25%, ${themeColors.tertiary})`,
           borderRadius: '25px',
           boxShadow: `3px 3px 0 ${themeColors.text}`,
-          padding: 0,
+          padding: '20px',
         }}
       >
-        <Typography sx={{ m: '20px', pt: '20px', color: themeColors.text, fontWeight: 600 }}>
+        <Typography sx={{ mb: '20px', color: themeColors.text, fontWeight: 600 }}>
           You should know...
         </Typography>
-        <Typography sx={{ m: '20px', color: themeColors.text }}>
+        <Typography sx={{ color: themeColors.text }}>
           Wet coughs, also known as productive coughs, can indicate that the body is trying to clear
           mucus or phlegm from the airways, but they may also signal an underlying infection or
           respiratory issue. While an occasional wet cough can result from a mild cold, persistent
