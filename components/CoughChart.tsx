@@ -54,7 +54,7 @@ export const CoughChart: React.FC<CoughChartProps> = ({ counts, labels, breakdow
           fontWeight: 600,
         }}
       >
-        Nightly Cough Count
+        BreathWatch
       </Typography>
 
       {/* Total cough count chart */}
