@@ -1,8 +1,8 @@
-import React, { useMemo } from 'react';
-import { Box, Typography, Chip } from '@mui/material';
-import { LineChart } from '@mui/x-charts/LineChart';
 import { Colors } from '@/constants/theme';
 import { EventSummary, ProbabilityTimeline } from '@/services/api';
+import { Box, Chip, Typography } from '@mui/material';
+import { LineChart } from '@mui/x-charts/LineChart';
+import React, { useMemo } from 'react';
 
 interface CoughChartProps {
   timeline?: ProbabilityTimeline;
@@ -43,7 +43,7 @@ export const CoughChart: React.FC<CoughChartProps> = ({
     <Box
       sx={{
         width: '100%',
-        maxWidth: 'calc(100dvw - 40px)',
+        maxWidth: 'calc(100dvw - 80px)',
         marginLeft: '20px',
         my: '30px',
         background: `linear-gradient(-45deg, ${themeColors.secondary} 25%, ${themeColors.tertiary})`,
@@ -52,16 +52,10 @@ export const CoughChart: React.FC<CoughChartProps> = ({
         padding: 3,
       }}
     >
-      <Typography
-        variant="h6"
-        sx={{ color: themeColors.text, fontWeight: 700, mb: 1 }}
-      >
+      <Typography variant="h6" sx={{ color: themeColors.text, fontWeight: 700, mb: 1 }}>
         Cough Timeline
       </Typography>
-      <Typography
-        variant="body2"
-        sx={{ color: themeColors.text, opacity: 0.75, mb: 2 }}
-      >
+      <Typography variant="body2" sx={{ color: themeColors.text, opacity: 0.75, mb: 2 }}>
         {hasTimeline
           ? `${timeline!.p_cough.length} tiles • stride ${timeline!.stride_seconds}s`
           : 'Timeline will appear once the first chunk finishes processing.'}
@@ -153,10 +147,7 @@ export const CoughChart: React.FC<CoughChartProps> = ({
       )}
 
       <Box sx={{ mt: 3 }}>
-        <Typography
-          variant="subtitle1"
-          sx={{ color: themeColors.text, fontWeight: 600, mb: 1 }}
-        >
+        <Typography variant="subtitle1" sx={{ color: themeColors.text, fontWeight: 600, mb: 1 }}>
           Detected Cough Episodes ({eventSummary?.num_events ?? 0})
         </Typography>
         {events.length === 0 ? (
