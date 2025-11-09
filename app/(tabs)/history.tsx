@@ -3,6 +3,7 @@ import { Box, Typography, Paper, Card, CardContent, Chip, Button, IconButton } f
 import { useRouter } from 'expo-router';
 import React, { useState, useEffect } from 'react';
 import { getRecordingHistory, RecordingHistoryItem, deleteRecording } from '@/services/storage';
+import { getHistoryWithMockData } from '@/utils/mockHistoryData';
 import DeleteIcon from '@mui/icons-material/Delete';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import CalendarTodayIcon from '@mui/icons-material/CalendarToday';
@@ -22,7 +23,8 @@ export default function HistoryPage() {
 
   const loadHistory = async () => {
     try {
-      const data = await getRecordingHistory();
+      // Use mock data if no real data exists
+      const data = await getHistoryWithMockData();
       setHistory(data);
     } catch (error) {
       console.error('Failed to load history:', error);
@@ -32,6 +34,11 @@ export default function HistoryPage() {
   };
 
   const handleDelete = async (sessionId: string) => {
+    // Don't allow deleting mock data (they start with "mock_session_")
+    if (sessionId.startsWith('mock_session_')) {
+      alert('This is demo data and cannot be deleted.');
+      return;
+    }
     if (confirm('Are you sure you want to delete this processed log?')) {
       await deleteRecording(sessionId);
       await loadHistory();

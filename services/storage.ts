@@ -82,7 +82,17 @@ export async function getRecordingHistory(): Promise<RecordingHistoryItem[]> {
 export async function getRecordingBySessionId(sessionId: string): Promise<RecordingHistoryItem | null> {
   try {
     const history = await getRecordingHistory();
-    return history.find(item => item.sessionId === sessionId) || null;
+    const found = history.find(item => item.sessionId === sessionId);
+    if (found) return found;
+    
+    // If not found in real history, check mock data
+    if (sessionId.startsWith('mock_session_')) {
+      const { generateMockHistoryItems } = await import('@/utils/mockHistoryData');
+      const mockItems = generateMockHistoryItems();
+      return mockItems.find(item => item.sessionId === sessionId) || null;
+    }
+    
+    return null;
   } catch (error) {
     console.error('Failed to get recording by session ID:', error);
     return null;

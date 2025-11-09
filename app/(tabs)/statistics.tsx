@@ -2,6 +2,7 @@ import { Colors } from '@/constants/theme';
 import { Box, Typography, Paper, Card, CardContent, Chip, IconButton } from '@mui/material';
 import React, { useState, useEffect, useMemo } from 'react';
 import { getRecordingHistory, RecordingHistoryItem } from '@/services/storage';
+import { getHistoryWithMockData } from '@/utils/mockHistoryData';
 import { LineChart } from '@mui/x-charts/LineChart';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import TrendingDownIcon from '@mui/icons-material/TrendingDown';
@@ -23,7 +24,8 @@ export default function StatisticsPage() {
 
   const loadHistory = async () => {
     try {
-      const data = await getRecordingHistory();
+      // Use mock data if no real data exists
+      const data = await getHistoryWithMockData();
       setHistory(data);
     } catch (error) {
       console.error('Failed to load history:', error);

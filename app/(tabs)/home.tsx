@@ -1,4 +1,5 @@
 import { CoughChart } from '@/components/CoughChart';
+import { WeeklyCoughChart } from '@/components/WeeklyCoughChart';
 import { Paper, Typography, Box, CircularProgress, Chip, Divider } from '@mui/material';
 import React, { useEffect, useMemo } from 'react';
 import { useRecording } from '@/contexts/RecordingContext';
@@ -11,6 +12,7 @@ import HelpIcon from '@mui/icons-material/Help';
 import InfoIcon from '@mui/icons-material/Info';
 import { buildLocalInterpretation } from '@/utils/localInterpretation';
 import HomeIcon from '@mui/icons-material/Home';
+import { MOCK_WEEKLY_DATA } from '@/utils/mockWeeklyData';
 export default function HomePage() {
   const themeColors = Colors.dark;
   const router = useRouter();
@@ -215,7 +217,13 @@ export default function HomePage() {
           </Typography>
         </Box>
       )}
-      <CoughChart timeline={timelineSource} eventSummary={eventSummarySource} />
+      
+      {/* Show weekly chart when no real data, or timeline chart when there is real data */}
+      {timelineSource && eventSummarySource ? (
+        <CoughChart timeline={timelineSource} eventSummary={eventSummarySource} />
+      ) : (
+        <WeeklyCoughChart weeklyData={MOCK_WEEKLY_DATA} />
+      )}
       {summarySource && (
         <Box
           sx={{
