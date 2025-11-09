@@ -27,7 +27,7 @@ export const Colors = {
   },
   typography: {
     fontFamily:
-      'Roboto, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif',
+      '"Helvetica Neue", Helvetica, Roboto, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif',
   },
 };
 
