@@ -2,6 +2,7 @@ import { Colors } from '@/constants/theme';
 import { Box, Typography } from '@mui/material';
 import { BarItemIdentifier } from '@mui/x-charts';
 import { BarChart } from '@mui/x-charts/BarChart';
+import { labelMarkClasses } from '@mui/x-charts/ChartsLabel';
 import React from 'react';
 
 interface CoughChartProps {
@@ -57,7 +58,36 @@ export const CoughChart: React.FC<CoughChartProps> = ({ counts, labels, breakdow
             height: '250px',
             maxWidth: 'calc(100dvw - 40px)',
           }}
-          xAxis={[{ data: labels, scaleType: 'band' }]}
+          xAxis={[
+            {
+              data: labels,
+              scaleType: 'band',
+              tickLabelStyle: { fill: themeColors.text },
+              labelStyle: { fill: themeColors.text },
+              sx: {
+                '& .MuiChartsAxis-line': {
+                  stroke: themeColors.text,
+                },
+                '& .MuiChartsAxis-tick': {
+                  stroke: themeColors.text,
+                },
+              },
+            },
+          ]}
+          yAxis={[
+            {
+              tickLabelStyle: { fill: themeColors.text },
+              labelStyle: { fill: themeColors.text },
+              sx: {
+                '& .MuiChartsAxis-line': {
+                  stroke: themeColors.text,
+                },
+                '& .MuiChartsAxis-tick': {
+                  stroke: themeColors.text,
+                },
+              },
+            },
+          ]}
           series={[
             {
               data: counts,
@@ -69,7 +99,17 @@ export const CoughChart: React.FC<CoughChartProps> = ({ counts, labels, breakdow
           borderRadius={4}
           onItemClick={handleItemClick}
           grid={{ vertical: true, horizontal: true }}
-          slotProps={{ tooltip: { trigger: 'none' } }}
+          slotProps={{
+            tooltip: { trigger: 'none' },
+            legend: {
+              sx: {
+                color: themeColors.text,
+                [`.${labelMarkClasses.fill}`]: {
+                  fill: themeColors.text,
+                },
+              },
+            },
+          }}
           layout="vertical"
         />
 
@@ -83,7 +123,36 @@ export const CoughChart: React.FC<CoughChartProps> = ({ counts, labels, breakdow
             <BarChart
               height={150}
               layout="horizontal"
-              yAxis={[{ data: ['Wet', 'Dry'], scaleType: 'band' }]}
+              xAxis={[
+                {
+                  tickLabelStyle: { fill: themeColors.text },
+                  labelStyle: { fill: themeColors.text },
+                  sx: {
+                    '& .MuiChartsAxis-line': {
+                      stroke: themeColors.text,
+                    },
+                    '& .MuiChartsAxis-tick': {
+                      stroke: themeColors.text,
+                    },
+                  },
+                },
+              ]}
+              yAxis={[
+                {
+                  data: ['Wet', 'Dry'],
+                  scaleType: 'band',
+                  tickLabelStyle: { fill: themeColors.text },
+                  labelStyle: { fill: themeColors.text },
+                  sx: {
+                    '& .MuiChartsAxis-line': {
+                      stroke: themeColors.text,
+                    },
+                    '& .MuiChartsAxis-tick': {
+                      stroke: themeColors.text,
+                    },
+                  },
+                },
+              ]}
               series={[
                 {
                   data: [breakdown[selectedIndex].wet, breakdown[selectedIndex].dry],
@@ -93,7 +162,17 @@ export const CoughChart: React.FC<CoughChartProps> = ({ counts, labels, breakdow
               ]}
               spacing={0.3}
               grid={{ vertical: true, horizontal: true }}
-              slotProps={{ tooltip: { trigger: 'none' } }}
+              slotProps={{
+                tooltip: { trigger: 'none' },
+                legend: {
+                  sx: {
+                    color: themeColors.text,
+                    [`.${labelMarkClasses.fill}`]: {
+                      fill: themeColors.text,
+                    },
+                  },
+                },
+              }}
             />
           ) : (
             <Typography variant="body1" align="center" sx={{ py: 10, color: themeColors.text }}>
